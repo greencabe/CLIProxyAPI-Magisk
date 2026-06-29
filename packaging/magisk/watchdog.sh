@@ -26,7 +26,7 @@ start_app() {
     chmod 0644 "$STATIC_DIR/management.html"
   fi
   cd "$DATADIR" || return 1
-  MANAGEMENT_STATIC_PATH="$STATIC_DIR" nohup "$BINARY" --config "$CONFIG" >> "$APP_LOG" 2>&1 &
+  GODEBUG=netdns=cgo MANAGEMENT_STATIC_PATH="$STATIC_DIR" nohup "$BINARY" --config "$CONFIG" >> "$APP_LOG" 2>&1 &
   echo $! > "$PIDFILE"
   log "started cli-proxy-api pid=$!"
 }

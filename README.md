@@ -18,6 +18,8 @@ This repository does not fork CLIProxyAPI source code. GitHub Actions downloads 
 - Starts CLIProxyAPI after Android boot.
 - Restarts CLIProxyAPI if it crashes.
 - Bundles `management.html` dashboard for offline first run.
+- Adds root-manager WebUI redirect to the CLIProxyAPI dashboard.
+- Adds root-manager action health check.
 - Stores config/state in `/data/adb/cliproxyapi`.
 - Writes logs to `/data/adb/cliproxyapi`.
 - Serves API at `http://127.0.0.1:8317` by default.

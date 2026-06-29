@@ -20,8 +20,10 @@ cp -a \
   "$PKG/service.sh" \
   "$PKG/watchdog.sh" \
   "$PKG/uninstall.sh" \
+  "$PKG/action.sh" \
   "$PKG/config" \
   "$PKG/static" \
+  "$PKG/webroot" \
   "$PKG/META-INF" \
   "$PKG/README.md" \
   "$PKG/update.json" \
@@ -32,7 +34,7 @@ sed \
   -e "s/@VERSION@/$VERSION/g" \
   -e "s/@VERSION_CODE@/$VERSION_CODE/g" \
   "$PKG/module.prop.in" > "$STAGE/module.prop"
-chmod 0755 "$STAGE/bin/cli-proxy-api" "$STAGE/customize.sh" "$STAGE/post-fs-data.sh" "$STAGE/service.sh" "$STAGE/watchdog.sh" "$STAGE/uninstall.sh" "$STAGE/META-INF/com/google/android/update-binary"
+chmod 0755 "$STAGE/bin/cli-proxy-api" "$STAGE/customize.sh" "$STAGE/post-fs-data.sh" "$STAGE/service.sh" "$STAGE/watchdog.sh" "$STAGE/uninstall.sh" "$STAGE/action.sh" "$STAGE/META-INF/com/google/android/update-binary"
 
 python3 - "$STAGE" "$ZIP" <<'PY'
 from pathlib import Path

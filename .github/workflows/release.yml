@@ -188,6 +188,7 @@ jobs:
           gh release create "$TAG" \
             dist/magisk/cliproxyapi-magisk.zip \
             dist/magisk/checksums.txt \
+            --target "$(git rev-parse HEAD)" \
             --title "CLIProxyAPI Magisk $TAG" \
             --notes "ARM64 Android Magisk module built from upstream CLIProxyAPI $TAG at ${UPSTREAM_SHA:-unknown}. Android-native binary, dashboard bundled. Author: Rofiq."
 

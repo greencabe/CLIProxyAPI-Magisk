@@ -1,0 +1,10 @@
+host: "127.0.0.1"
+port: 8317
+log-level: "info"
+auth-dir: "/data/adb/cliproxyapi/auths"
+logging-to-file: true
+logs-max-total-size-mb: 50
+usage-statistics-enabled: true
+request-retry: 3
+routing:
+  strategy: "round-robin"

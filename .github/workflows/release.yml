@@ -1,0 +1,127 @@
+name: Sync Upstream Release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 */6 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          json=$(gh api repos/router-for-me/CLIProxyAPI/releases/latest)
+          tag=$(printf '%s' "$json" | jq -r .tag_name)
+          version=${tag#v}
+          asset="CLIProxyAPI_${version}_linux_aarch64.tar.gz"
+          url=$(printf '%s' "$json" | jq -r --arg asset "$asset" '.assets[] | select(.name == $asset) | .browser_download_url')
+          checksum_url=$(printf '%s' "$json" | jq -r '.assets[] | select(.name == "checksums.txt") | .browser_download_url')
+          [ -n "$url" ] || { echo "Missing asset: $asset" >&2; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "checksum_url=$checksum_url" >> "$GITHUB_OUTPUT"
+
+      - name: Skip existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download upstream binary
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          URL: ${{ steps.upstream.outputs.url }}
+          CHECKSUM_URL: ${{ steps.upstream.outputs.checksum_url }}
+          ASSET: ${{ steps.upstream.outputs.asset }}
+        run: |
+          set -euo pipefail
+          mkdir -p tmp bin
+          curl -fL "$URL" -o "tmp/$ASSET"
+          curl -fL "$CHECKSUM_URL" -o tmp/checksums.txt
+          grep " $ASSET$" tmp/checksums.txt > tmp/checksum-line.txt
+          (cd tmp && sha256sum -c checksum-line.txt)
+          tar -xzf "tmp/$ASSET" -C tmp cli-proxy-api
+          install -m 0755 tmp/cli-proxy-api bin/cli-proxy-api
+
+      - name: Update module metadata
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          set -euo pipefail
+          code=$(printf '%s' "$VERSION" | awk -F. '{ printf "%d%03d%03d", $1, $2, $3 }')
+          sed -i "s/^version=.*/version=$TAG/" module.prop
+          sed -i "s/^versionCode=.*/versionCode=$code/" module.prop
+
+      - name: Update Magisk update JSON
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          code=$(printf '%s' "$VERSION" | awk -F. '{ printf "%d%03d%03d", $1, $2, $3 }')
+          cat > update.json <<JSON
+          {
+            "version": "$TAG",
+            "versionCode": $code,
+            "zipUrl": "https://github.com/$REPO/releases/download/$TAG/cliproxyapi-magisk.zip",
+            "changelog": "https://github.com/$REPO/releases/tag/$TAG"
+          }
+          JSON
+
+      - name: Build Magisk ZIP
+        if: steps.existing.outputs.exists == 'false'
+        run: ./scripts/build.sh
+
+      - name: Generate checksums
+        if: steps.existing.outputs.exists == 'false'
+        run: |
+          cd dist
+          sha256sum cliproxyapi-magisk.zip > checksums.txt
+
+      - name: Commit update metadata
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.upstream.outputs.tag }}
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add module.prop update.json
+          git commit -m "chore: sync CLIProxyAPI $TAG" || true
+          git push
+
+      - name: Create release
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.upstream.outputs.tag }}
+          VERSION: ${{ steps.upstream.outputs.version }}
+        run: |
+          gh release create "$TAG" \
+            dist/cliproxyapi-magisk.zip \
+            dist/checksums.txt \
+            --target "$(git rev-parse HEAD)" \
+            --title "CLIProxyAPI Magisk $TAG" \
+            --notes "Auto-built from upstream router-for-me/CLIProxyAPI $TAG.\n\nAuthor: Rofiq\n\nDefault endpoint: http://127.0.0.1:8317"

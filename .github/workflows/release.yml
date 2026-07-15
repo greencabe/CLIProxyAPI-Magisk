@@ -183,7 +183,6 @@ jobs:
         uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         with:
           ndk-version: r27c
-          local-cache: true
 
       - name: Resolve Android compiler from the selected NDK
         if: steps.release.outputs.skip != 'true'

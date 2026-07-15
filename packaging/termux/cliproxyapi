@@ -3,10 +3,21 @@
 
 BIN=/data/adb/modules/cliproxyapi/bin/cli-proxy-api
 CONFIG=/data/adb/cliproxyapi/config.yaml
+PASSWORD_HELPER=/data/adb/modules/cliproxyapi/set-dashboard-password.sh
 
 quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
+
+case "${1:-}" in
+  dashboard-password|set-dashboard-password)
+    [ "$#" -eq 1 ] || {
+      echo "usage: cliproxyapi dashboard-password" >&2
+      exit 2
+    }
+    exec su -c "$(quote "$PASSWORD_HELPER")"
+    ;;
+esac
 
 has_config=0
 for arg in "$@"; do

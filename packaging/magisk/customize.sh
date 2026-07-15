@@ -35,7 +35,8 @@ else
   ui_print "- Kept config: $DATADIR/config.yaml"
 fi
 
-chmod 0755 "$BIN" "$MODPATH/service.sh" "$MODPATH/watchdog.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/uninstall.sh" "$MODPATH/action.sh"
+chmod 0755 "$BIN" "$MODPATH/service.sh" "$MODPATH/watchdog.sh" "$MODPATH/post-fs-data.sh" "$MODPATH/uninstall.sh" "$MODPATH/action.sh" "$MODPATH/set-dashboard-password.sh"
+chmod 0600 "$DATADIR/config.yaml"
 TERMUX_BIN=/data/data/com.termux/files/usr/bin
 if [ -d "$TERMUX_BIN" ] && [ -f "$MODPATH/termux-wrapper.sh" ]; then
   TERMUX_WRAPPER="$TERMUX_BIN/cliproxyapi"

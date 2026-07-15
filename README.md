@@ -63,6 +63,18 @@ manager WebUI redirects to it. CLIProxyAPI requires
 `remote-management.secret-key` even for local management requests, so set that
 value before expecting dashboard controls to work.
 
+When Termux is installed, configure or rotate that key with one interactive
+command. Input is hidden, confirmed twice, written without exposing it in the
+process arguments, and the service is restarted with a health check:
+
+```sh
+cliproxyapi dashboard-password
+```
+
+Then open `http://127.0.0.1:8317/management.html` on the Android device and use
+the entered value as the management key. The helper keeps remote access
+disabled when it creates the `remote-management` section.
+
 ## Runtime Behavior
 
 - Starts CLIProxyAPI from the root manager's late-start service stage.

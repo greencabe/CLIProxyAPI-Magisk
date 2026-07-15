@@ -11,6 +11,9 @@ VERSION_CODE=${VERSION_CODE:-0}
 
 [ -x "$PKG/bin/cli-proxy-api" ] || { echo "missing executable: packaging/magisk/bin/cli-proxy-api" >&2; exit 1; }
 [ -f "$PKG/static/management.html" ] || { echo "missing dashboard: packaging/magisk/static/management.html" >&2; exit 1; }
+[ -f "$ROOT/README.md" ] || { echo "missing repository README" >&2; exit 1; }
+[ -f "$ROOT/LICENSE" ] || { echo "missing repository LICENSE" >&2; exit 1; }
+[ -f "$ROOT/THIRD_PARTY_NOTICES.md" ] || { echo "missing third-party notices" >&2; exit 1; }
 
 rm -rf "$OUT"
 mkdir -p "$STAGE"
@@ -25,12 +28,14 @@ cp -a \
   "$PKG/static" \
   "$PKG/webroot" \
   "$PKG/META-INF" \
-  "$PKG/README.md" \
   "$PKG/update.json" \
   "$STAGE/"
 mkdir -p "$STAGE/bin"
 cp "$PKG/bin/cli-proxy-api" "$STAGE/bin/cli-proxy-api"
 cp "$ROOT/packaging/termux/cliproxyapi" "$STAGE/termux-wrapper.sh"
+cp "$ROOT/README.md" "$STAGE/README.md"
+cp "$ROOT/LICENSE" "$STAGE/LICENSE"
+cp "$ROOT/THIRD_PARTY_NOTICES.md" "$STAGE/THIRD_PARTY_NOTICES.md"
 sed \
   -e "s/@VERSION@/$VERSION/g" \
   -e "s/@VERSION_CODE@/$VERSION_CODE/g" \

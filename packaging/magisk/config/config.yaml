@@ -1,3 +1,5 @@
+# Safe default: keep the unauthenticated API on-device only. Before changing
+# this to 0.0.0.0, configure a strong, unique top-level api-keys value.
 host: "127.0.0.1"
 port: 8317
 log-level: "info"

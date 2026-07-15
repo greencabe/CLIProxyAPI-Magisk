@@ -1,69 +1,153 @@
 # CLIProxyAPI Magisk
 
-ARM64 Android Magisk/KernelSU/Next SU module builder for [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI).
+ARM64 Android Magisk/KernelSU/Next SU module builder for
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI).
 
 Author: Rofiq
 
-This repository does not fork CLIProxyAPI source code. GitHub Actions checks out the official upstream release tag, builds an Android-native ARM64 binary, overlays the Magisk packaging files, bundles the dashboard, then publishes a release with the same upstream tag.
+This repository does not fork CLIProxyAPI source code. GitHub Actions checks
+out an official upstream release, builds an Android-native ARM64 binary,
+overlays the root-module packaging, bundles the management dashboard, and
+publishes a traceable release archive.
 
-## Release Flow
+## Requirements
 
-- Scheduled workflow checks latest upstream CLIProxyAPI release every 6 hours.
-- If this repo has no release with that tag, it builds Android ARM64 `cliproxyapi-magisk.zip`.
-- Manual workflow can build latest or a specific upstream tag.
-- `force=true` rebuilds an existing release.
+- ARM64 (`arm64-v8a`) device.
+- Android 7.0/API 24 or newer.
+- A current Magisk, KernelSU, or Next SU manager.
+- Installation through the root manager; custom-recovery installation is not
+  supported or tested.
+
+## Installation
+
+1. Download `cliproxyapi-magisk.zip` and `checksums.txt` from the
+   [latest release](https://github.com/greencabe/CLIProxyAPI-Magisk/releases/latest).
+2. Verify the download with `sha256sum -c checksums.txt` when that tool is
+   available.
+3. Install the ZIP from the module page in Magisk, KernelSU, or Next SU.
+4. Reboot, then open the module action to inspect its health report.
+5. Configure provider credentials with the optional Termux wrapper or edit
+   `/data/adb/cliproxyapi/config.yaml` as root.
+
+## Security Defaults
+
+The default listener is `127.0.0.1:8317`, so an empty `api-keys` list is only
+appropriate for on-device use. The management API remains disabled until a
+management secret is configured. Never expose the default configuration to a
+LAN or the internet.
+
+## Secure LAN Access
+
+Create a long, unique client key before changing the listener to `0.0.0.0`:
+
+```yaml
+host: "0.0.0.0"
+port: 8317
+
+api-keys:
+  - "replace-with-a-long-random-client-key"
+
+remote-management:
+  allow-remote: false
+  secret-key: "replace-with-a-different-long-random-management-key"
+```
+
+Restart the service after editing. Keep `allow-remote: false` unless remote
+dashboard administration is explicitly required; API access over an untrusted
+network should be protected by a firewall or an authenticated TLS tunnel.
+
+## Dashboard
+
+The bundled `management.html` supports an offline first run and the root
+manager WebUI redirects to it. CLIProxyAPI requires
+`remote-management.secret-key` even for local management requests, so set that
+value before expecting dashboard controls to work.
 
 ## Runtime Behavior
 
-- Starts CLIProxyAPI after Android boot.
-- Restarts CLIProxyAPI if it crashes.
-- Bundles `management.html` dashboard for offline first run.
-- Adds root-manager WebUI redirect to the CLIProxyAPI dashboard.
-- Adds root-manager action health check.
-- Stores config/state in `/data/adb/cliproxyapi`.
-- Writes logs to `/data/adb/cliproxyapi`.
-- Serves API at `http://127.0.0.1:8317` by default.
+- Starts CLIProxyAPI from the root manager's late-start service stage.
+- Restarts a crashed process with bounded backoff to avoid a tight crash loop.
+- Rejects stale PID files instead of signaling unrelated Android processes.
+- Preserves configuration and provider authentication across module upgrades.
+- Stores state outside the replaceable module directory in
+  `/data/adb/cliproxyapi`.
+- Serves the API at `http://127.0.0.1:8317` by default.
 
-Disable autostart:
+Disable autostart and stop the running service:
 
 ```sh
 touch /data/adb/cliproxyapi/disable
 ```
 
-Stop once:
+Stop it for the current boot only:
 
 ```sh
 touch /data/adb/cliproxyapi/stop
 ```
 
+Start it again during the same boot:
+
+```sh
+rm -f /data/adb/cliproxyapi/disable /data/adb/cliproxyapi/stop
+sh /data/adb/modules/cliproxyapi/service.sh
+```
+
 ## Paths
 
 - Config: `/data/adb/cliproxyapi/config.yaml`
-- Auth files: `/data/adb/cliproxyapi/auths`
-- App log: `/data/adb/cliproxyapi/cliproxyapi.log`
+- Provider auth files: `/data/adb/cliproxyapi/auths`
+- App stdout/stderr: `/data/adb/cliproxyapi/cliproxyapi.log`
+- Rotating application logs: `/data/adb/cliproxyapi/logs`
 - Watchdog log: `/data/adb/cliproxyapi/watchdog.log`
 - Dashboard: `/data/adb/cliproxyapi/static/management.html`
 
-## LAN Access
+## Termux CLI Wrapper
 
-Edit `/data/adb/cliproxyapi/config.yaml`:
+When Termux already exists, the installer adds a `cliproxyapi` wrapper that
+forwards CLIProxyAPI arguments through `su` and supplies the module config by
+default. An unrelated existing executable is not overwritten.
 
-```yaml
-host: "0.0.0.0"
-port: 8317
+```sh
+cliproxyapi -h
+cliproxyapi -codex-login -no-browser
+cliproxyapi -codex-device-login
+cliproxyapi -claude-login -no-browser
 ```
 
-## Manual Build In Actions
+## Uninstall and Credential Removal
 
-Open **Actions → Release Magisk Module → Run workflow**.
+Normal uninstall stops the service and removes the module-owned Termux wrapper,
+but intentionally preserves `/data/adb/cliproxyapi` for later reinstall. That
+directory contains configuration and provider tokens; permanently erase it
+only when those credentials are no longer needed:
 
-- `upstream_tag` empty: build latest upstream release.
-- `upstream_tag=v7.2.45`: build specific release tag.
-- `force=true`: rebuild even if release exists.
+```sh
+su -c 'rm -rf /data/adb/cliproxyapi'
+```
+
+## Release Flow
+
+- A scheduled workflow checks the latest upstream CLIProxyAPI release at
+  00:00, 06:00, 12:00, and 18:00 UTC every day.
+- An existing published release and tag are never deleted or overwritten.
+- Manual dispatch can build the latest release or a specific semantic tag.
+- `versionCode` reserves its final two digits for immutable `r1`–`r99`
+  packaging revisions, so subsequent upstream versions remain newer.
+- Release notes record the CLIProxyAPI commit, model catalog commit, dashboard
+  release, and dashboard digest used by the build.
+- The release contains the module ZIP, SHA-256 checksum, and provenance; the
+  ZIP itself includes the project license and third-party notices.
+
+## Manual Build in Actions
+
+Open **Actions → Release Magisk Module → Run workflow** and optionally provide
+an upstream tag such as `v7.2.79`. If the upstream version was already
+published, set `force=true` to create the first free immutable revision tag
+from `v7.2.79-r1` through `v7.2.79-r99` rather than replacing the original.
 
 ## Local Build
 
-Put files here:
+Put build inputs here:
 
 ```text
 packaging/magisk/bin/cli-proxy-api
@@ -73,24 +157,20 @@ packaging/magisk/static/management.html
 Then run:
 
 ```sh
-VERSION=v7.2.45 VERSION_CODE=7002045 ./packaging/magisk/build-module.sh
+VERSION=v7.2.79 VERSION_CODE=700207900 ./packaging/magisk/build-module.sh
 ```
 
-Output:
+The resulting archive is `dist/magisk/cliproxyapi-magisk.zip`.
 
-```text
-dist/magisk/cliproxyapi-magisk.zip
-```
+## Validation
 
-## Termux CLI Wrapper
+Pull requests and pushes validate shell syntax, workflow syntax, module
+metadata, executable permissions, archive contents, and Android ELF properties.
+Device-level verification is still recommended when changing boot, SELinux, or
+root-manager integration behavior.
 
-Module installs `cliproxyapi` into Termux when Termux exists. It forwards all CLIProxyAPI flags through root and injects the module config by default.
+## License
 
-Examples:
-
-```sh
-cliproxyapi -h
-cliproxyapi -codex-login -no-browser
-cliproxyapi -codex-device-login
-cliproxyapi -claude-login -no-browser
-```
+Packaging code is available under the [MIT License](LICENSE). Upstream notices
+shipped with release archives are recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

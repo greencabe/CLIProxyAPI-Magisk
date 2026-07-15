@@ -3,5 +3,5 @@ name=CLIProxyAPI Magisk
 version=@VERSION@
 versionCode=@VERSION_CODE@
 author=Rofiq
-description=Run CLIProxyAPI as Magisk boot service with crash auto-heal on rooted Android.
+description=Run CLIProxyAPI as an ARM64 Android 7+ boot service with guarded crash recovery.
 updateJson=https://raw.githubusercontent.com/greencabe/CLIProxyAPI-Magisk/main/packaging/magisk/update.json

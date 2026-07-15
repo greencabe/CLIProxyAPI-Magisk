@@ -8,29 +8,51 @@ on:
         required: false
         type: string
       force:
-        description: 'Rebuild release even if it already exists'
+        description: 'Build a new -rN revision when the release/tag already exists'
         required: false
         default: false
         type: boolean
+      models_ref:
+        description: 'Optional models git ref/SHA; empty = current main'
+        required: false
+        type: string
+      panel_tag:
+        description: 'Optional management panel release tag; empty = latest release'
+        required: false
+        type: string
+      panel_sha256:
+        description: 'Optional expected SHA-256 for management.html'
+        required: false
+        type: string
   schedule:
-    - cron: '17 */6 * * *'
+    - cron: '0 */6 * * *'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: cliproxyapi-magisk-release
+  cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build upstream CLIProxyAPI release as Android Magisk module
+  build:
+    name: Build Android Magisk release bundle
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      skip: ${{ steps.release.outputs.skip }}
 
     steps:
       - name: Checkout packaging repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           path: cliproxyapi-magisk
+          persist-credentials: false
 
-      - name: Resolve upstream release
+      - name: Resolve and validate upstream release
         id: upstream
         working-directory: cliproxyapi-magisk
         env:
@@ -43,180 +65,378 @@ jobs:
           else
             json=$(gh api repos/router-for-me/CLIProxyAPI/releases/latest)
           fi
-          tag=$(printf '%s' "$json" | jq -r .tag_name)
-          version=${tag#v}
-          sha=$(gh api "repos/router-for-me/CLIProxyAPI/git/ref/tags/$tag" --jq '.object.sha' 2>/dev/null || true)
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
-      - name: Skip existing release
-        id: existing
+          tag=$(printf '%s' "$json" | jq -er '.tag_name')
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Refusing non-stable semantic upstream tag: $tag" >&2
+            exit 1
+          fi
+
+          ref_json=$(gh api "repos/router-for-me/CLIProxyAPI/git/ref/tags/$tag")
+          source_sha=$(printf '%s' "$ref_json" | jq -er '.object.sha')
+          object_type=$(printf '%s' "$ref_json" | jq -er '.object.type')
+          depth=0
+          while [ "$object_type" = "tag" ]; do
+            tag_json=$(gh api "repos/router-for-me/CLIProxyAPI/git/tags/$source_sha")
+            source_sha=$(printf '%s' "$tag_json" | jq -er '.object.sha')
+            object_type=$(printf '%s' "$tag_json" | jq -er '.object.type')
+            depth=$((depth + 1))
+            [ "$depth" -le 5 ] || {
+              echo "Annotated tag chain is unexpectedly deep: $tag" >&2
+              exit 1
+            }
+          done
+          [ "$object_type" = "commit" ] || {
+            echo "Upstream tag does not resolve to a commit: $tag" >&2
+            exit 1
+          }
+
+          version=${tag#v}
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "source_sha=$source_sha"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Select an immutable release tag
+        id: release
         working-directory: cliproxyapi-magisk
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.upstream.outputs.tag }}
-          FORCE: ${{ inputs.force }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
         run: |
           set -euo pipefail
-          if [ "$FORCE" != "true" ] && gh release view "$TAG" >/dev/null 2>&1; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "Release $TAG already exists; skip"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
+
+          tag_exists() {
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$1" >/dev/null 2>&1 ||
+              gh release view "$1" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1
+          }
+
+          release_tag=$UPSTREAM_TAG
+          revision=0
+          if tag_exists "$release_tag"; then
+            if [ "$FORCE" != "true" ]; then
+              {
+                echo "skip=true"
+                echo "release_tag=$release_tag"
+                echo "revision=0"
+              } >> "$GITHUB_OUTPUT"
+              echo "Release or tag $release_tag already exists; skip"
+              exit 0
+            fi
+
+            revision=1
+            while tag_exists "${UPSTREAM_TAG}-r${revision}"; do
+              revision=$((revision + 1))
+              [ "$revision" -le 99 ] || {
+                echo "No free revision tag found for $UPSTREAM_TAG" >&2
+                exit 1
+              }
+            done
+            release_tag="${UPSTREAM_TAG}-r${revision}"
           fi
 
+          {
+            echo "skip=false"
+            echo "release_tag=$release_tag"
+            echo "revision=$revision"
+          } >> "$GITHUB_OUTPUT"
+          echo "Selected release tag: $release_tag"
+
       - name: Checkout upstream CLIProxyAPI
-        if: steps.existing.outputs.skip != 'true'
-        uses: actions/checkout@v4
+        if: steps.release.outputs.skip != 'true'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: router-for-me/CLIProxyAPI
-          ref: ${{ steps.upstream.outputs.tag }}
+          ref: ${{ steps.upstream.outputs.source_sha }}
           path: cliproxyapi
-          fetch-depth: 0
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Record upstream source commit
+        if: steps.release.outputs.skip != 'true'
+        id: source
+        working-directory: cliproxyapi
+        env:
+          EXPECTED_SHA: ${{ steps.upstream.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          actual=$(git rev-parse HEAD)
+          [ "$actual" = "$EXPECTED_SHA" ] || {
+            echo "Upstream checkout mismatch: expected $EXPECTED_SHA, got $actual" >&2
+            exit 1
+          }
+          echo "sha=$actual" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
-        if: steps.existing.outputs.skip != 'true'
-        uses: actions/setup-go@v5
+        if: steps.release.outputs.skip != 'true'
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.26.x'
           cache: true
           cache-dependency-path: cliproxyapi/go.sum
 
       - name: Set up Android NDK
-        if: steps.existing.outputs.skip != 'true'
+        if: steps.release.outputs.skip != 'true'
         id: setup-ndk
-        uses: nttld/setup-ndk@v1
+        uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779 # v1
         with:
           ndk-version: r27c
           local-cache: true
 
-      - name: Resolve Android compiler
-        if: steps.existing.outputs.skip != 'true'
+      - name: Resolve Android compiler from the selected NDK
+        if: steps.release.outputs.skip != 'true'
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
-          cc=$(find "$ANDROID_NDK_HOME" -type f -name aarch64-linux-android24-clang | sort | head -1)
-          if [ -z "$cc" ]; then
-            cc=$(find "$ANDROID_NDK_HOME" -type f -name aarch64-linux-android21-clang | sort | head -1)
-          fi
-          [ -x "$cc" ] || { echo "Android clang not found" >&2; exit 1; }
+          cc="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          [ -x "$cc" ] || {
+            echo "Android API 24 clang not found in $ANDROID_NDK_HOME" >&2
+            exit 1
+          }
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_CC=$cc" >> "$GITHUB_ENV"
           "$cc" --version
 
-      - name: Refresh models catalog
-        if: steps.existing.outputs.skip != 'true'
-        working-directory: cliproxyapi
-        run: |
-          set -euo pipefail
-          git fetch --depth 1 https://github.com/router-for-me/models.git main
-          git show FETCH_HEAD:models.json > internal/registry/models/models.json
-
-      - name: Build Android binary
-        if: steps.existing.outputs.skip != 'true'
+      - name: Resolve and pin models catalog
+        if: steps.release.outputs.skip != 'true'
+        id: models
         working-directory: cliproxyapi
         env:
-          TAG: ${{ steps.upstream.outputs.tag }}
-          VERSION: ${{ steps.upstream.outputs.version }}
+          INPUT_MODELS_REF: ${{ inputs.models_ref }}
         run: |
           set -euo pipefail
-          commit=$(git rev-parse --short HEAD)
-          build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          mkdir -p ../cliproxyapi-magisk/packaging/magisk/bin
-          CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC="$ANDROID_CC" go build -buildvcs=false \
-            -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${commit} -X main.BuildDate=${build_date}" \
-            -o ../cliproxyapi-magisk/packaging/magisk/bin/cli-proxy-api ./cmd/server/
-          readelf -l ../cliproxyapi-magisk/packaging/magisk/bin/cli-proxy-api | grep -q '/system/bin/linker64'
-          readelf -d ../cliproxyapi-magisk/packaging/magisk/bin/cli-proxy-api | grep -q 'libc.so'
+          models_ref=${INPUT_MODELS_REF:-main}
+          git fetch --no-tags --depth=1 https://github.com/router-for-me/models.git "$models_ref"
+          models_sha=$(git rev-parse FETCH_HEAD)
+          git show "${models_sha}:models.json" > internal/registry/models/models.json
+          echo "sha=$models_sha" >> "$GITHUB_OUTPUT"
+          echo "ref=$models_ref" >> "$GITHUB_OUTPUT"
 
-      - name: Download dashboard asset
-        if: steps.existing.outputs.skip != 'true'
+      - name: Build Android binary
+        if: steps.release.outputs.skip != 'true'
+        working-directory: cliproxyapi
+        env:
+          VERSION: ${{ steps.upstream.outputs.version }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          build_epoch=$(git show -s --format=%ct "$SOURCE_SHA")
+          build_date=$(date -u -d "@$build_epoch" +%Y-%m-%dT%H:%M:%SZ)
+          mkdir -p ../cliproxyapi-magisk/packaging/magisk/bin
+          CGO_ENABLED=1 GOOS=android GOARCH=arm64 CC="$ANDROID_CC" go build \
+            -buildvcs=false -trimpath \
+            -ldflags="-s -w -buildid= -X main.Version=${VERSION} -X main.Commit=${SOURCE_SHA} -X main.BuildDate=${build_date}" \
+            -o ../cliproxyapi-magisk/packaging/magisk/bin/cli-proxy-api ./cmd/server/
+
+      - name: Download and verify dashboard asset
+        if: steps.release.outputs.skip != 'true'
+        id: panel
         working-directory: cliproxyapi-magisk
         env:
           GH_TOKEN: ${{ github.token }}
+          INPUT_PANEL_TAG: ${{ inputs.panel_tag }}
+          EXPECTED_SHA256: ${{ inputs.panel_sha256 }}
         run: |
           set -euo pipefail
-          mkdir -p packaging/magisk/static
-          panel_json=$(gh api repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest)
-          panel_url=$(printf '%s' "$panel_json" | jq -r '.assets[] | select(.name == "management.html") | .browser_download_url')
-          panel_digest=$(printf '%s' "$panel_json" | jq -r '.assets[] | select(.name == "management.html") | .digest // ""')
-          [ -n "$panel_url" ] || { echo "Missing management.html asset" >&2; exit 1; }
-          curl -fL "$panel_url" -o packaging/magisk/static/management.html
-          if [ -n "$panel_digest" ] && [ "$panel_digest" != "null" ]; then
-            expected=${panel_digest#sha256:}
-            actual=$(sha256sum packaging/magisk/static/management.html | awk '{print $1}')
-            [ "$expected" = "$actual" ] || { echo "management.html checksum mismatch" >&2; exit 1; }
+          if [ -n "${INPUT_PANEL_TAG:-}" ]; then
+            panel_json=$(gh api "repos/router-for-me/Cli-Proxy-API-Management-Center/releases/tags/$INPUT_PANEL_TAG")
+          else
+            panel_json=$(gh api repos/router-for-me/Cli-Proxy-API-Management-Center/releases/latest)
           fi
 
+          panel_tag=$(printf '%s' "$panel_json" | jq -er '.tag_name')
+          panel_url=$(printf '%s' "$panel_json" | jq -er '.assets[] | select(.name == "management.html") | .browser_download_url')
+          panel_digest=$(printf '%s' "$panel_json" | jq -r '.assets[] | select(.name == "management.html") | .digest // empty')
+          panel_asset_id=$(printf '%s' "$panel_json" | jq -er '.assets[] | select(.name == "management.html") | .id')
+
+          mkdir -p packaging/magisk/static
+          curl --fail --location --proto '=https' --retry 3 "$panel_url" \
+            --output packaging/magisk/static/management.html
+          actual=$(sha256sum packaging/magisk/static/management.html | awk '{print $1}')
+
+          if [ -n "$panel_digest" ]; then
+            [ "${panel_digest#sha256:}" = "$actual" ] || {
+              echo "management.html GitHub digest mismatch" >&2
+              exit 1
+            }
+          fi
+          if [ -n "${EXPECTED_SHA256:-}" ]; then
+            [ "${EXPECTED_SHA256#sha256:}" = "$actual" ] || {
+              echo "management.html requested SHA-256 mismatch" >&2
+              exit 1
+            }
+          fi
+
+          {
+            echo "tag=$panel_tag"
+            echo "asset_id=$panel_asset_id"
+            echo "sha256=$actual"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Update Magisk metadata
-        if: steps.existing.outputs.skip != 'true'
+        if: steps.release.outputs.skip != 'true'
+        id: metadata
         working-directory: cliproxyapi-magisk
         env:
-          TAG: ${{ steps.upstream.outputs.tag }}
-          VERSION: ${{ steps.upstream.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          UPSTREAM_VERSION: ${{ steps.upstream.outputs.version }}
+          REVISION: ${{ steps.release.outputs.revision }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          code=$(printf '%s' "$VERSION" | awk -F. '{ printf "%d%03d%03d", $1, $2, $3 }')
-          cat > packaging/magisk/update.json <<JSON
-          {
-            "version": "$TAG",
-            "versionCode": $code,
-            "zipUrl": "https://github.com/$REPO/releases/download/$TAG/cliproxyapi-magisk.zip",
-            "changelog": "https://github.com/$REPO/releases/tag/$TAG"
+          core=${UPSTREAM_VERSION%%-*}
+          IFS=. read -r major minor patch <<< "$core"
+          [ "$minor" -le 999 ] && [ "$patch" -le 999 ] || {
+            echo "Minor and patch versions must fit in three digits" >&2
+            exit 1
           }
-          JSON
-          echo "version_code=$code" >> "$GITHUB_ENV"
+          base_code=$((10#$major * 1000000 + 10#$minor * 1000 + 10#$patch))
+          code=$((base_code * 100 + REVISION))
+
+          jq -n \
+            --arg version "$RELEASE_TAG" \
+            --argjson versionCode "$code" \
+            --arg zipUrl "https://github.com/$REPO/releases/download/$RELEASE_TAG/cliproxyapi-magisk.zip" \
+            --arg changelog "https://github.com/$REPO/releases/tag/$RELEASE_TAG" \
+            '{version: $version, versionCode: $versionCode, zipUrl: $zipUrl, changelog: $changelog}' \
+            > packaging/magisk/update.json
+          echo "version_code=$code" >> "$GITHUB_OUTPUT"
 
       - name: Build Magisk module
-        if: steps.existing.outputs.skip != 'true'
+        if: steps.release.outputs.skip != 'true'
         working-directory: cliproxyapi-magisk
         env:
-          VERSION: ${{ steps.upstream.outputs.tag }}
-          VERSION_CODE: ${{ env.version_code }}
+          VERSION: ${{ steps.release.outputs.release_tag }}
+          VERSION_CODE: ${{ steps.metadata.outputs.version_code }}
         run: ./packaging/magisk/build-module.sh
 
-      - name: Generate checksums
-        if: steps.existing.outputs.skip != 'true'
-        working-directory: cliproxyapi-magisk
-        run: |
-          cd dist/magisk
-          sha256sum cliproxyapi-magisk.zip > checksums.txt
-
-      - name: Commit update metadata
-        if: steps.existing.outputs.skip != 'true'
+      - name: Generate checksums and provenance
+        if: steps.release.outputs.skip != 'true'
         working-directory: cliproxyapi-magisk
         env:
-          TAG: ${{ steps.upstream.outputs.tag }}
-        run: |
-          git config user.name github-actions[bot]
-          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add packaging/magisk/update.json
-          git commit -m "chore: sync CLIProxyAPI $TAG" || true
-          git push
-
-      - name: Publish GitHub release
-        if: steps.existing.outputs.skip != 'true'
-        working-directory: cliproxyapi-magisk
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.upstream.outputs.tag }}
-          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.tag }}
+          UPSTREAM_SHA: ${{ steps.source.outputs.sha }}
+          MODELS_REF: ${{ steps.models.outputs.ref }}
+          MODELS_SHA: ${{ steps.models.outputs.sha }}
+          PANEL_TAG: ${{ steps.panel.outputs.tag }}
+          PANEL_ASSET_ID: ${{ steps.panel.outputs.asset_id }}
+          PANEL_SHA256: ${{ steps.panel.outputs.sha256 }}
+          NDK_VERSION: ${{ steps.setup-ndk.outputs.ndk-full-version }}
         run: |
           set -euo pipefail
-          gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
-          git tag -f "$TAG"
-          git push origin "refs/tags/$TAG" --force
+          cd dist/magisk
+          sha256sum cliproxyapi-magisk.zip > checksums.txt
+          cp ../../packaging/magisk/update.json update.json
+
+          jq -n \
+            --arg releaseTag "$RELEASE_TAG" \
+            --arg sourceRepository "router-for-me/CLIProxyAPI" \
+            --arg upstreamTag "$UPSTREAM_TAG" \
+            --arg upstreamCommit "$UPSTREAM_SHA" \
+            --arg modelsRepository "router-for-me/models" \
+            --arg modelsRef "$MODELS_REF" \
+            --arg modelsCommit "$MODELS_SHA" \
+            --arg panelRepository "router-for-me/Cli-Proxy-API-Management-Center" \
+            --arg panelTag "$PANEL_TAG" \
+            --arg panelAssetId "$PANEL_ASSET_ID" \
+            --arg panelSha256 "$PANEL_SHA256" \
+            --arg ndkVersion "$NDK_VERSION" \
+            --arg goVersion "$(go env GOVERSION)" \
+            '{schemaVersion: 1, releaseTag: $releaseTag, source: {repository: $sourceRepository, tag: $upstreamTag, commit: $upstreamCommit}, models: {repository: $modelsRepository, ref: $modelsRef, commit: $modelsCommit}, dashboard: {repository: $panelRepository, tag: $panelTag, assetId: $panelAssetId, sha256: $panelSha256}, toolchain: {androidNdk: $ndkVersion, go: $goVersion}}' \
+            > provenance.json
+
+          printf '%s\n' \
+            "ARM64 Android Magisk module built from upstream CLIProxyAPI $UPSTREAM_TAG." \
+            "" \
+            "Upstream commit: $UPSTREAM_SHA" \
+            "Upstream changelog: https://github.com/router-for-me/CLIProxyAPI/releases/tag/$UPSTREAM_TAG" \
+            "Models commit: $MODELS_SHA" \
+            "Dashboard release: $PANEL_TAG" \
+            "Dashboard SHA-256: $PANEL_SHA256" \
+            "Android NDK: $NDK_VERSION" \
+            "" \
+            "Full machine-readable provenance is attached as provenance.json." \
+            "Author: Rofiq." > release-notes.md
+
+      - name: Validate release assets
+        if: steps.release.outputs.skip != 'true'
+        working-directory: cliproxyapi-magisk
+        run: ./scripts/ci/validate-release-assets.sh dist/magisk --android-arm64
+
+      - name: Upload immutable release bundle
+        if: steps.release.outputs.skip != 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: magisk-release-${{ steps.release.outputs.release_tag }}
+          path: cliproxyapi-magisk/dist/magisk/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Publish immutable GitHub release
+    needs: build
+    if: needs.build.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout packaging repo
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Download verified release bundle
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: magisk-release-${{ needs.build.outputs.release_tag }}
+          path: release-bundle
+
+      - name: Refuse to overwrite an existing tag or release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1 ||
+             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing tag or release: $TAG" >&2
+            exit 1
+          fi
+
+      - name: Commit update metadata
+        env:
+          TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          cp release-bundle/update.json packaging/magisk/update.json
+          git diff --check
+          if git diff --quiet -- packaging/magisk/update.json; then
+            echo "update.json already points at $TAG"
+          else
+            git config user.name github-actions[bot]
+            git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+            git add packaging/magisk/update.json
+            git commit -m "chore: publish CLIProxyAPI $TAG"
+            git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          fi
+
+      - name: Publish GitHub release without replacing history
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.release_tag }}
+        run: |
+          set -euo pipefail
           gh release create "$TAG" \
-            dist/magisk/cliproxyapi-magisk.zip \
-            dist/magisk/checksums.txt \
+            release-bundle/cliproxyapi-magisk.zip \
+            release-bundle/checksums.txt \
+            release-bundle/provenance.json \
+            --repo "$GITHUB_REPOSITORY" \
             --target "$(git rev-parse HEAD)" \
             --title "CLIProxyAPI Magisk $TAG" \
-            --notes "ARM64 Android Magisk module built from upstream CLIProxyAPI $TAG at ${UPSTREAM_SHA:-unknown}. Android-native binary, dashboard bundled. Author: Rofiq."
-
-      - name: Upload Magisk artifact
-        if: steps.existing.outputs.skip != 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: cliproxyapi-magisk-${{ steps.upstream.outputs.tag }}-arm64
-          path: cliproxyapi-magisk/dist/magisk/cliproxyapi-magisk.zip
-          if-no-files-found: error
+            --notes-file release-bundle/release-notes.md

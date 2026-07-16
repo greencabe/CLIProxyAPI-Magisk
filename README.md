@@ -26,19 +26,21 @@ publishes a traceable release archive.
    available.
 3. Install the ZIP from the module page in Magisk, KernelSU, or Next SU.
 4. Reboot, then open the module action to inspect its health report.
-5. Configure provider credentials with the optional Termux wrapper or edit
-   `/data/adb/cliproxyapi/config.yaml` as root.
+5. Log in with the initial dashboard password `admin123`, immediately rotate it
+   with `cliproxyapi dashboard-password`, then configure provider credentials.
 
 ## Security Defaults
 
-The default listener is `127.0.0.1:8317`, so an empty `api-keys` list is only
-appropriate for on-device use. The management API remains disabled until a
-management secret is configured. Never expose the default configuration to a
-LAN or the internet.
+The default listener is `0.0.0.0:8317` and remote management is allowed so
+trusted LAN and hotspot clients can connect. A fresh install generates a unique
+256-bit client API key and initially enables the dashboard with password
+`admin123`. Change that password immediately after installation. Never expose
+port 8317 directly to the internet or an untrusted network.
 
 ## Secure LAN Access
 
-Create a long, unique client key before changing the listener to `0.0.0.0`:
+The generated config is equivalent to the following. The client API key is
+unique per installation; the initial management password must be rotated:
 
 ```yaml
 host: "0.0.0.0"
@@ -48,12 +50,12 @@ api-keys:
   - "replace-with-a-long-random-client-key"
 
 remote-management:
-  allow-remote: false
-  secret-key: "replace-with-a-different-long-random-management-key"
+  allow-remote: true
+  secret-key: "admin123"
 ```
 
-Restart the service after editing. Keep `allow-remote: false` unless remote
-dashboard administration is explicitly required; API access over an untrusted
+Restart the service after editing. Remote management uses the management key,
+while proxy requests use the separate client API key. Access over an untrusted
 network should be protected by a firewall or an authenticated TLS tunnel.
 
 ## Dashboard
@@ -71,9 +73,10 @@ process arguments, and the service is restarted with a health check:
 cliproxyapi dashboard-password
 ```
 
-Then open `http://127.0.0.1:8317/management.html` on the Android device and use
-the entered value as the management key. The helper keeps remote access
-disabled when it creates the `remote-management` section.
+Then open `http://127.0.0.1:8317/management.html` on the Android device, or use
+the Android device's LAN/hotspot IP from another trusted device, and enter the
+management key. When it creates the `remote-management` section, the helper
+enables remote management by default.
 
 ## Runtime Behavior
 
@@ -83,7 +86,7 @@ disabled when it creates the `remote-management` section.
 - Preserves configuration and provider authentication across module upgrades.
 - Stores state outside the replaceable module directory in
   `/data/adb/cliproxyapi`.
-- Serves the API at `http://127.0.0.1:8317` by default.
+- Serves the API on all interfaces at port `8317` by default.
 
 Disable autostart and stop the running service:
 

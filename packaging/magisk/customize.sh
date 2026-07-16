@@ -30,7 +30,19 @@ fi
 
 if [ ! -f "$DATADIR/config.yaml" ]; then
   cp "$MODPATH/config/config.yaml" "$DATADIR/config.yaml" || abort "Config copy failed"
+  UUID_ONE=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+  UUID_TWO=$(cat /proc/sys/kernel/random/uuid 2>/dev/null)
+  CLIENT_API_KEY=$(printf '%s%s' "$UUID_ONE" "$UUID_TWO" | tr -d '-')
+  case "$CLIENT_API_KEY" in
+    *[!0-9a-f]*|'') abort "Secure client API key generation failed" ;;
+  esac
+  [ "${#CLIENT_API_KEY}" -eq 64 ] || abort "Generated client API key has an invalid length"
+  sed -i "s/@GENERATED_API_KEY@/$CLIENT_API_KEY/" "$DATADIR/config.yaml" || abort "Client API key injection failed"
+  grep -Fq '@GENERATED_API_KEY@' "$DATADIR/config.yaml" && abort "Client API key placeholder was not replaced"
+  unset UUID_ONE UUID_TWO CLIENT_API_KEY
   ui_print "- Created config: $DATADIR/config.yaml"
+  ui_print "- Generated a unique client API key in the config"
+  ui_print "- Initial dashboard password: admin123 (change it immediately)"
 else
   ui_print "- Kept config: $DATADIR/config.yaml"
 fi
@@ -59,6 +71,6 @@ if [ -d "$TERMUX_BIN" ] && [ -f "$MODPATH/termux-wrapper.sh" ]; then
   fi
 fi
 
-ui_print "- Endpoint default: http://127.0.0.1:8317"
+ui_print "- Listener default: 0.0.0.0:8317"
 ui_print "- Reboot to start service"
 ui_print "- Disable: touch $DATADIR/disable"

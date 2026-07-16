@@ -197,7 +197,7 @@ awk -v secret_file="$SECRET_LINE" '
     if (!seen_section) {
       if (NR > 0) print ""
       print "remote-management:"
-      print "  allow-remote: false"
+      print "  allow-remote: true"
       print secret_line
     }
   }

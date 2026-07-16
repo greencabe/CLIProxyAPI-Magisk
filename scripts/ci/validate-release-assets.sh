@@ -96,6 +96,16 @@ with ZipFile(zip_path) as archive:
     if properties.get("id") != "cliproxyapi":
         raise SystemExit("module.prop has an unexpected module id")
 
+    default_config = archive.read("config/config.yaml").decode("utf-8")
+    for expected in (
+        'host: "0.0.0.0"',
+        '  - "@GENERATED_API_KEY@"',
+        "  allow-remote: true",
+        '  secret-key: "admin123"',
+    ):
+        if expected not in default_config:
+            raise SystemExit(f"default config is missing: {expected}")
+
     update = json.loads(archive.read("update.json"))
     for key in ("version", "versionCode", "zipUrl", "changelog"):
         if key not in update:

@@ -1,7 +1,13 @@
-# Safe default: keep the unauthenticated API on-device only. Before changing
-# this to 0.0.0.0, configure a strong, unique top-level api-keys value.
-host: "127.0.0.1"
+# Listen on every interface so trusted LAN and hotspot clients can connect.
+# The installer replaces the placeholder below with a random 256-bit API key.
+host: "0.0.0.0"
 port: 8317
+api-keys:
+  - "@GENERATED_API_KEY@"
+remote-management:
+  # Initial credential for first login. Change it immediately after install.
+  allow-remote: true
+  secret-key: "admin123"
 log-level: "info"
 auth-dir: "/data/adb/cliproxyapi/auths"
 logging-to-file: true

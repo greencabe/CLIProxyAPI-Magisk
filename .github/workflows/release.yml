@@ -299,7 +299,7 @@ jobs:
             --arg version "$RELEASE_TAG" \
             --argjson versionCode "$code" \
             --arg zipUrl "https://github.com/$REPO/releases/download/$RELEASE_TAG/cliproxyapi-magisk.zip" \
-            --arg changelog "https://github.com/$REPO/releases/tag/$RELEASE_TAG" \
+            --arg changelog "https://github.com/$REPO/releases/download/$RELEASE_TAG/release-notes.md" \
             '{version: $version, versionCode: $versionCode, zipUrl: $zipUrl, changelog: $changelog}' \
             > packaging/magisk/update.json
           echo "version_code=$code" >> "$GITHUB_OUTPUT"
@@ -325,6 +325,7 @@ jobs:
           PANEL_ASSET_ID: ${{ steps.panel.outputs.asset_id }}
           PANEL_SHA256: ${{ steps.panel.outputs.sha256 }}
           NDK_VERSION: ${{ steps.setup-ndk.outputs.ndk-full-version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd dist/magisk
@@ -348,18 +349,38 @@ jobs:
             '{schemaVersion: 1, releaseTag: $releaseTag, source: {repository: $sourceRepository, tag: $upstreamTag, commit: $upstreamCommit}, models: {repository: $modelsRepository, ref: $modelsRef, commit: $modelsCommit}, dashboard: {repository: $panelRepository, tag: $panelTag, assetId: $panelAssetId, sha256: $panelSha256}, toolchain: {androidNdk: $ndkVersion, go: $goVersion}}' \
             > provenance.json
 
-          printf '%s\n' \
-            "ARM64 Android Magisk module built from upstream CLIProxyAPI $UPSTREAM_TAG." \
-            "" \
-            "Upstream commit: $UPSTREAM_SHA" \
-            "Upstream changelog: https://github.com/router-for-me/CLIProxyAPI/releases/tag/$UPSTREAM_TAG" \
-            "Models commit: $MODELS_SHA" \
-            "Dashboard release: $PANEL_TAG" \
-            "Dashboard SHA-256: $PANEL_SHA256" \
-            "Android NDK: $NDK_VERSION" \
-            "" \
-            "Full machine-readable provenance is attached as provenance.json." \
-            "Author: Rofiq." > release-notes.md
+          upstream_notes=$(gh api \
+            "repos/router-for-me/CLIProxyAPI/releases/tags/$UPSTREAM_TAG" \
+            --jq '.body // ""')
+
+          {
+            printf '%s\n' \
+              "# CLIProxyAPI Magisk $RELEASE_TAG" \
+              "" \
+              "ARM64 Android Magisk module built from upstream CLIProxyAPI $UPSTREAM_TAG." \
+              "" \
+              "## Upstream changes ($UPSTREAM_TAG)" \
+              ""
+            if [ -n "$upstream_notes" ]; then
+              printf '%s\n' "$upstream_notes"
+            else
+              printf '%s\n' "No upstream release notes were provided."
+            fi
+            printf '%s\n' \
+              "" \
+              "## Build provenance" \
+              "" \
+              "- Upstream commit: \`$UPSTREAM_SHA\`" \
+              "- Upstream release: https://github.com/router-for-me/CLIProxyAPI/releases/tag/$UPSTREAM_TAG" \
+              "- Models commit: \`$MODELS_SHA\`" \
+              "- Dashboard release: \`$PANEL_TAG\`" \
+              "- Dashboard SHA-256: \`$PANEL_SHA256\`" \
+              "- Android NDK: \`$NDK_VERSION\`" \
+              "" \
+              "Full machine-readable provenance is attached as \`provenance.json\`." \
+              "" \
+              "Author: Rofiq."
+          } > release-notes.md
 
       - name: Validate release assets
         if: steps.release.outputs.skip != 'true'
@@ -435,6 +456,7 @@ jobs:
             release-bundle/cliproxyapi-magisk.zip \
             release-bundle/checksums.txt \
             release-bundle/provenance.json \
+            release-bundle/release-notes.md \
             --repo "$GITHUB_REPOSITORY" \
             --target "$(git rev-parse HEAD)" \
             --title "CLIProxyAPI Magisk $TAG" \

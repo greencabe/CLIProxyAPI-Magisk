@@ -29,7 +29,7 @@ RELEASE_NOTES="$ASSET_DIR/release-notes.md"
 )
 unzip -t "$ZIP" >/dev/null
 
-python3 - "$ZIP" "$PROVENANCE" "$UPDATE_METADATA" <<'PY'
+python3 - "$ZIP" "$PROVENANCE" "$UPDATE_METADATA" "$RELEASE_NOTES" <<'PY'
 import json
 import stat
 import sys
@@ -39,6 +39,7 @@ from zipfile import ZipFile
 zip_path = Path(sys.argv[1])
 provenance_path = Path(sys.argv[2])
 update_metadata_path = Path(sys.argv[3])
+release_notes_path = Path(sys.argv[4])
 required = {
     "LICENSE",
     "META-INF/com/google/android/update-binary",
@@ -114,6 +115,13 @@ with ZipFile(zip_path) as archive:
         raise SystemExit("module.prop and update.json versions differ")
     if update["versionCode"] != int(properties.get("versionCode", "-1")):
         raise SystemExit("module.prop and update.json version codes differ")
+    expected_changelog_suffix = (
+        f"/releases/download/{update['version']}/release-notes.md"
+    )
+    if not update["changelog"].endswith(expected_changelog_suffix):
+        raise SystemExit(
+            "update.json changelog must point to the versioned release-notes.md asset"
+        )
 
 external_update = json.loads(update_metadata_path.read_text(encoding="utf-8"))
 if external_update != update:
@@ -125,6 +133,16 @@ for key in ("releaseTag", "source", "models", "dashboard", "toolchain"):
         raise SystemExit(f"provenance.json is missing {key}")
 if provenance["releaseTag"] != update["version"]:
     raise SystemExit("provenance releaseTag differs from update.json version")
+
+release_notes = release_notes_path.read_text(encoding="utf-8")
+release_notes_lower = release_notes.lower()
+if "## Upstream changes" not in release_notes:
+    raise SystemExit("release notes do not include upstream changes")
+if any(
+    marker in release_notes_lower
+    for marker in ("<!doctype", "<html", "data-color-mode=")
+):
+    raise SystemExit("release notes contain an HTML page instead of Markdown text")
 PY
 
 TMPDIR_ROOT=${RUNNER_TEMP:-${TMPDIR:-/tmp}}

@@ -58,7 +58,7 @@ jobs:
             --arg version 'v0.0.0' \
             --argjson versionCode 0 \
             --arg zipUrl 'https://example.invalid/cliproxyapi-magisk.zip' \
-            --arg changelog 'https://example.invalid/changelog' \
+            --arg changelog 'https://example.invalid/releases/download/v0.0.0/release-notes.md' \
             '{version: $version, versionCode: $versionCode, zipUrl: $zipUrl, changelog: $changelog}' \
             > packaging/magisk/update.json
           VERSION=v0.0.0 VERSION_CODE=0 ./packaging/magisk/build-module.sh
@@ -67,6 +67,6 @@ jobs:
             sha256sum cliproxyapi-magisk.zip > checksums.txt
             cp ../../packaging/magisk/update.json update.json
             printf '%s\n' '{"releaseTag":"v0.0.0","source":{},"models":{},"dashboard":{},"toolchain":{}}' > provenance.json
-            printf '%s\n' 'CI fixture release notes.' > release-notes.md
+            printf '%s\n' '# CI fixture' '' '## Upstream changes (v0.0.0)' '' '- Fixture change.' > release-notes.md
           )
           ./scripts/ci/validate-release-assets.sh dist/magisk
